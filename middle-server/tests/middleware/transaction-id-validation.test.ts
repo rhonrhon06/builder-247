@@ -1,6 +1,23 @@
 import { Request, Response, NextFunction } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { validateTransactionId } from '../../src/middleware/transaction-id-validation';
+import winston from 'winston';
+
+// Mock winston logger
+jest.mock('winston', () => ({
+  createLogger: jest.fn(() => ({
+    error: jest.fn(),
+    warn: jest.fn(),
+    info: jest.fn()
+  })),
+  format: {
+    json: jest.fn()
+  },
+  transports: {
+    File: jest.fn(),
+    Console: jest.fn()
+  }
+}));
 
 describe('Transaction ID Validation Middleware', () => {
   let mockRequest: Partial<Request>;
@@ -9,7 +26,9 @@ describe('Transaction ID Validation Middleware', () => {
 
   beforeEach(() => {
     mockRequest = {
-      headers: {}
+      headers: {},
+      path: '/test-path',
+      ip: '127.0.0.1'
     };
     mockResponse = {
       status: jest.fn().mockReturnThis(),
@@ -48,7 +67,7 @@ describe('Transaction ID Validation Middleware', () => {
     expect(mockNext).not.toHaveBeenCalled();
   });
 
-  it('should allow request with valid Transaction ID', () => {
+  it('should allow request with valid unique Transaction ID', () => {
     const validUuid = uuidv4();
     mockRequest.headers = { 'x-transaction-id': validUuid };
 
@@ -60,5 +79,55 @@ describe('Transaction ID Validation Middleware', () => {
 
     expect(mockNext).toHaveBeenCalled();
     expect(mockRequest.transactionId).toBe(validUuid);
+  });
+
+  it('should reject duplicate Transaction ID', () => {
+    const duplicateUuid = uuidv4();
+    mockRequest.headers = { 'x-transaction-id': duplicateUuid };
+
+    // First call - should pass
+    validateTransactionId(
+      mockRequest as Request, 
+      mockResponse as Response, 
+      mockNext
+    );
+
+    // Reset mocks
+    mockResponse = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn()
+    };
+    mockNext = jest.fn();
+
+    // Second call with same UUID - should fail
+    validateTransactionId(
+      mockRequest as Request, 
+      mockResponse as Response, 
+      mockNext
+    );
+
+    expect(mockResponse.status).toHaveBeenCalledWith(409);
+    expect(mockResponse.json).toHaveBeenCalledWith(expect.objectContaining({
+      error: 'Duplicate Transaction ID'
+    }));
+    expect(mockNext).not.toHaveBeenCalled();
+  });
+
+  it('should log validation events', () => {
+    const validUuid = uuidv4();
+    mockRequest.headers = { 'x-transaction-id': validUuid };
+
+    validateTransactionId(
+      mockRequest as Request, 
+      mockResponse as Response, 
+      mockNext
+    );
+
+    // Verify logging occurs
+    const mockLogger = winston.createLogger();
+    expect(mockLogger.info).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'TRANSACTION_VALIDATED',
+      transactionId: validUuid
+    }));
   });
 });
